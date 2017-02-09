@@ -1,0 +1,210 @@
+
+●EntityFactoryクラスで使用するデリゲートについて
+
+デリゲートをわざわざ宣言して書いてた部分は置き換えられるらしい
+delegate Vector3 vector3_delegate() 		⇒ Func<Vector3>
+delegate Quaternion quaternion_delegate() 	⇒ Func<Quaternion>
+
+要するに
+
+MakeEntity(string name, vector3_delegate pos, quaternion_delegate rot, vector3_delegate scl)
+↓
+MakeEntity(string name, Func<Vector3> pos, Func<Quaternion> rot, Func<Vector3> scl)
+
+Func<T,TResult>などを使う場合はそのデリゲートが何のために必要なのか読み取り辛くなるため、
+使わないほうがよい場面もある。
+イベント処理用のデリゲートでは名前が付いていたほうが分かり易い為、
+それらしく名付けて宣言しておくようである。
+
+
+
+●Randomクラスのstatic変数について
+
+Random.InsideUnitSphereやRandom.valueはただのreadonlyなstatic変数である。
+にも関わらず、毎回呼び出すたびに違う値を返してくれるので、どういう実装を
+しているのか考えてみたが、恐らくgetterによるものではないかと結論した。
+
+//Random.InsideUnitSphereに倣って変数のようにして呼びたいのならgetterを使う？
+//よく使いそうで引数がなく、返り値の型が常に一定で、内部で複雑な処理をさせない
+//(例外を吐いて止まったりしない)関数を置き換えられる？
+//以下は一辺の長さが 1の立方体内のランダムな座標を返すstatic変数
+
+public static Vector3 RandomVector3{
+
+	public get{
+		return new Vector3(Random.value, Random.value, Random.value);
+	}
+
+}
+
+//内部でメソッドを呼ぶことも出来るのでこんなのも試してみたら動いた
+//呼び出すたびにメソッドA B Cを実行し、全て正常終了した場合のみTRUEな変数
+//関数を呼び出せる変数というとまるでデリゲートのようである
+//"変数を呼び出したと思ったらプログラムが動いた"みたいなウィルスじみた挙動も出来そうで怖い
+
+public static bool AllGreen{
+
+	public get{
+		
+		bool a, b, c;
+
+		//return ( A() && B() && C() ) とするとA()がfalseのときにB,Cが実行されないため
+		//変数に結果を代入して最後にチェックする
+		a = A(1);
+		b = B(1,2);
+		c = C(1,2,3);
+
+		return ( a && b && c );
+	}
+
+}
+
+
+
+●基点の位置 basic_posかつ一辺の長さ lengthの立方体内のランダム位置を返すラムダ式
+横長いがどうせ関数に与える時は引数ごとに改行するため問題ないか
+
+前提：
+Vector3 basic_pos;
+float frame_length;
+
+() => basic_pos + frame_length * (new Vector3(Random.value, Random.value, Random.value))
+
+クラス変数のgetterを利用するなら見た目がすっきりする
+() => basic_pos + frame_length * MyRandom.RandomVector3
+
+basic_posとframe_lengthをラムダ式の引数として与えることもできるが、果たして実用的だろうか？
+Func<TResult> funcを使用して、与えた関数内での呼び出しは常にfunc()と出来た方が個人的には嬉しい。
+上記のような要求はループごとに各変数の値を変えるような場合に出てくるものと思うが、
+それでも以下のようにすれば良いのではないか。
+
+List<GameObject> temp = new List<GameObject>();
+
+for(略){
+	
+	basic_pos = 略;
+	frame_length = 略
+
+	temp.Add(  MakeEntity("name",
+		   	      () => basic_pos + frame_length * MyRandom.RandomVector3,
+		   	      () => Random.rotation,
+		   	      () => Vector3.one) );
+
+}
+
+デリゲートの引数ごとに関数を増やしたりする必要はないと思った。
+
+
+
+●基点の位置 basic_posかつ半径 radiusの球体のランダム位置を返すラムダ式
+
+半径 1の球体内のランダムな位置を与えてくれるstatic変数が存在する
+
+() => basic_pos + Random.InsideUnitSphere * radius
+
+
+
+●回転ラムダ式
+回転に関してはだいたい以下があれば十分
+
+//ランダム回転
+//rotationとrotationUniformの違いだが、rotationUniformの方は
+//連続一様分布(Uniform distribution)に従った結果が出ている？らしい
+() => Random.rotation
+() => Random.rotationUniform
+
+//無回転
+() => Quaternion.identity
+
+//特定の回転を与えたい場合
+() => Quaternion.Euler(x_rot, y_rot, z_rot)
+
+//ランダム回転時、各軸での回転を制限したい場合は新たに関数定義してもよいが、これも一行で書ける
+//ただし凄く横長い上に実用性があるか不明
+() => Quaternion.Euler(Random.Range(x_rot_min, x_rot_max), Random.Range(y_rot_min, y_rot_max), Random.Range(z_rot_min, z_rot_max))
+
+
+
+●スケールラムダ式
+恐らくほぼ以下の二択であろう
+Randomクラスのメソッドを使用すればもちろんランダムサイズな設定も可能である
+
+//等倍
+() => Vector3.one
+
+//特定の倍率
+() => new Vector3(x_scale, y_scale, z_scale)
+
+
+
+●UnityのMesh Colliderの仕様について
+
+悩まされた点について以下に箇条書き
+
+１．MeshCollider同士の衝突判定にはMeshColliderのconvexプロパティがオンである必要がある
+２．convexプロパティをONにすると、メッシュに穴が開いていても穴が無いかのように衝突判定が行われる
+３．MeshColliderとプリミティブなColliderはconvexプロパティがオフでも衝突判定が行われる
+４．SphereColliderの内部は中空かと思ったがそうではないようで、SphereColliderと衝突できる状態の
+　　MeshColliderを内側に入れて移動させたりすると奇妙な挙動をする
+
+特に大事なのは２で、例えば容器の中に物を入れるようなシーンを作りたい場合、
+容器に入れる物体のColliderはSphereやCubeのような基本のColliderしか使用できないということである。
+
+また、４の現象に悩まされたため、球状のケージは当たり判定のない球の周りを板で覆う方法で実装した。
+そういうオブジェクトはこう作る！ のようなガイドラインがあれば是非知りたいものである。
+
+
+
+●視界オブジェクトについて
+
+今回のアプリケーションでは視界を円錐状にしているが、本当ならば富士山やプリンのような
+円錐の上部をカットした形だとオブジェクトに近い位置でも視界が利いて回避の安定性が増しそうである。
+
+ソフトでモデリングして取込む形にすると、スケールを変えても上下の円のサイズ比が一定になってしまうため、
+ネット上で公開されていたものをお借りした円錐作成スクリプトを参考にして富士山型生成スクリプトを組むなどすれば
+今後も応用できそうである。
+
+
+
+●一人称カメラの回転操作について
+
+ 後述するUnityの回転角度の仕様のため、角度拘束の方法にずいぶん悩まされたが
+ 何とか解決策を思いついたため以下に記す。
+
+
+//上下回転は無制限に許可すると回転がおかしくなるため上下85°までに制限する
+//Unityのx軸回転は無回転が0°　そこから下に回転で+1°
+//0°から上に回転すると即座に360°になってしまう仕様である
+//そのままでは範囲が不連続で扱いづらいため 以下のif文の左辺の計算をすると
+//95° < (現在のx軸回転角度 + 180) % 360 < 265°の連続した範囲が得られて
+//条件式として使用できる
+	
+	x_rotate = -Input.GetAxis ("Vertical") * rotate_speed * Time.deltaTime;
+	y_rotate = Input.GetAxis ("Horizontal") * rotate_speed * Time.deltaTime;
+
+	if ((transform.rotation.eulerAngles.x + x_rotate + 180f) % 360 <= 95f ||
+	   	(transform.rotation.eulerAngles.x + x_rotate + 180f) % 360 >= 265f) {
+		x_rotate = 0;
+	}
+	
+
+//横回転と縦回転をローカル座標とワールド座標に分けることで
+//上下回転後の左右回転や左右回転後の上下回転の動作が直感的なものになる
+			
+	transform.Rotate (Vector3.right * x_rotate, Space.Self);
+	transform.Rotate (Vector3.up * y_rotate, Space.World);
+
+
+
+●リソースの扱いについて
+
+Resource.Loadで得たアセットの情報を変数に入れておくと毎回読み込みをしない分
+高速に扱うことができるが、SceneManagerのように常時存在するようなクラスに変数があると
+常時メモリに負荷がかかる。
+
+PCでのアプリ開発には影響がないこともあるが、スマホアプリ等の場合は致命傷になることも。
+毎回必要なときにResource.Loadで呼ぶようにすればリソースのデータを貯め込まずに済む。
+あるいは任意のタイミングでResource.UnloadUnusedAssets()を呼ぶと、その時点で使用していない
+アセットを解放してくれるそうである。
+
+
